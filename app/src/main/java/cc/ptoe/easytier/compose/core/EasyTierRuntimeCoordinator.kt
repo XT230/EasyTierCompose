@@ -11,6 +11,7 @@ import cc.ptoe.easytier.compose.data.RuntimeStatus
 import cc.ptoe.easytier.compose.data.TunMode
 import cc.ptoe.easytier.compose.data.mergeInto
 import cc.ptoe.easytier.compose.transport.root.RootTunTransport
+import cc.ptoe.easytier.compose.transport.vpn.VpnNetworkProbe
 import cc.ptoe.easytier.compose.transport.vpn.VpnPermissionRequester
 import cc.ptoe.easytier.compose.transport.vpn.VpnTunTransport
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +55,9 @@ class EasyTierRuntimeCoordinator private constructor(
 
     companion object {
         private const val TAG = "EasyTierCoordinator"
+
+        /** Pause before re-running teardown when the service did not acknowledge. */
+        private const val TEARDOWN_RETRY_DELAY_MS = 300L
 
         // Process-wide singleton: BootCompletedReceiver and MainActivity must share one
         // coordinator. Two instances would each run their own poll loops and transports
@@ -215,8 +219,7 @@ class EasyTierRuntimeCoordinator private constructor(
         // via attachRunningInstance().
         throw cancellation
     } catch (error: Throwable) {
-        vpn.stop()
-        runCatching { EasyTierJni.retainNetworkInstance(null) }
+        teardownVpn()
         failure(profile, error.message ?: nativeError(R.string.error_easytier_start_failed))
     }
 
@@ -268,11 +271,19 @@ class EasyTierRuntimeCoordinator private constructor(
             }
             TunMode.VPN_SERVICE -> {
                 mutableStatus.value = mutableStatus.value.copy(state = RuntimeState.STOPPING)
-                vpn.stop()
-                runCatching { EasyTierJni.retainNetworkInstance(null) }
+                teardownVpn()
             }
             TunMode.ROOT_TUN -> root.stop()
-            null -> return mutableStatus.value.takeIf { it.state == RuntimeState.STOPPED } ?: RuntimeStatus.Stopped
+            null -> {
+                // The coordinator can lose track of the session (process restart,
+                // failed adopt) while the VpnService is still alive. Returning early
+                // here used to leave that VPN up forever.
+                if (vpn.isTunnelOpen()) {
+                    mutableStatus.value = mutableStatus.value.copy(state = RuntimeState.STOPPING)
+                    teardownVpn()
+                }
+                return mutableStatus.value.takeIf { it.state == RuntimeState.STOPPED } ?: RuntimeStatus.Stopped
+            }
         }
         activeProfile = null
         return RuntimeStatus.Stopped.also { mutableStatus.value = it }
@@ -293,15 +304,13 @@ class EasyTierRuntimeCoordinator private constructor(
                 if (exitDetector.onPoll(info)) {
                     Log.w(TAG, "core for profile ${profile.id} is gone; tearing down VPN")
                     failure(profile, context.getString(R.string.error_core_stopped))
-                    vpn.stop()
-                    runCatching { EasyTierJni.retainNetworkInstance(null) }
+                    teardownVpn()
                     return@launch
                 }
                 if (info != null) {
                     if (!info.error.isNullOrBlank()) {
                         failure(profile, info.error)
-                        vpn.stop()
-                        EasyTierJni.retainNetworkInstance(null)
+                        teardownVpn()
                         return@launch
                     }
                     if (!info.virtualIpv4.isNullOrBlank()) {
@@ -371,6 +380,29 @@ class EasyTierRuntimeCoordinator private constructor(
                 delay(5_000)
             }
         }
+    }
+
+    /**
+     * Deterministic VPN teardown shared by every stop path (user disconnect, core
+     * exit, start failure, orphan cleanup).
+     *
+     * Order matters: the EasyTier core receives the TUN descriptor through
+     * `setTunFd` and may keep its own handle on it, so the core is stopped
+     * *before* the service closes its descriptor — the system removes the VPN
+     * network only once every holder is gone. A late `startForegroundService`
+     * intent is neutralised by [cc.ptoe.easytier.compose.transport.vpn.VpnTeardownGate],
+     * and one retry covers a service that is still shutting down.
+     */
+    private suspend fun teardownVpn() {
+        runCatching { EasyTierJni.retainNetworkInstance(null) }
+            .onFailure { Log.w(TAG, "teardown: retainNetworkInstance(null) failed: ${it.message}") }
+        vpn.stop()
+        if (vpn.isTunnelOpen()) {
+            Log.w(TAG, "teardown: VpnService still open after first attempt; retrying")
+            delay(TEARDOWN_RETRY_DELAY_MS)
+            vpn.stop()
+        }
+        VpnNetworkProbe.logState(context, TAG)
     }
 
     private fun failure(profile: EasyTierProfile, error: String): RuntimeStatus =

@@ -16,12 +16,28 @@ import androidx.core.app.ServiceCompat
 import cc.ptoe.easytier.compose.MainActivity
 import cc.ptoe.easytier.compose.R
 import cc.ptoe.easytier.compose.core.EasyTierJni
+import java.lang.ref.WeakReference
 
 class EasyTierVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Always satisfy the startForegroundService() contract first: a stop or a
+        // dropped start still has to promote itself before bailing out, otherwise
+        // the platform kills the process with ForegroundServiceDidNotStartInTime.
         startForegroundCompat()
+        if (intent?.action == ACTION_STOP) {
+            Log.i(TAG, "onStartCommand: explicit ACTION_STOP")
+            stopTunnelAndSelf(startId)
+            return Service.START_NOT_STICKY
+        }
+        if (!gate.allowStart()) {
+            // A start intent was queued before the disconnect landed; re-creating
+            // the TUN here would leave the system VPN up with no EasyTier core.
+            Log.w(TAG, "onStartCommand: dropped start request queued before teardown")
+            stopTunnelAndSelf(startId)
+            return Service.START_NOT_STICKY
+        }
         val command = intent ?: return stopAndExit(startId)
         val instanceName = command.getStringExtra(EXTRA_INSTANCE_NAME) ?: return stopAndExit(startId, "missing instance name")
         val ipv4Cidr = command.getStringExtra(EXTRA_IPV4_CIDR) ?: return stopAndExit(startId, "missing ipv4 cidr")
@@ -43,14 +59,25 @@ class EasyTierVpnService : VpnService() {
             vpnInterface = null
             return stopAndExit(startId, "setTunFd=$result")
         }
+        gate.markOpen()
         Log.i(TAG, "onStartCommand: success, fd=${vpnInterface?.fd}")
         return Service.START_NOT_STICKY
     }
 
     private fun stopAndExit(startId: Int, reason: String = "unknown"): Int {
         Log.w(TAG, "stopAndExit: $reason")
+        // A failed (re)start leaves no TUN behind, so the gate must not keep
+        // claiming an open tunnel from an earlier session.
+        gate.markClosed()
         stopSelf(startId)
         return Service.START_NOT_STICKY
+    }
+
+    /** Closes the TUN, records the teardown and stops the service. */
+    private fun stopTunnelAndSelf(startId: Int? = null) {
+        closeTunnel()
+        gate.markClosed()
+        if (startId != null) stopSelf(startId) else stopSelf()
     }
 
     private fun startForegroundCompat() {
@@ -64,12 +91,21 @@ class EasyTierVpnService : VpnService() {
 
     override fun onRevoke() {
         closeTunnel()
+        gate.markClosed()
         super.onRevoke()
     }
 
     override fun onDestroy() {
         closeTunnel()
+        gate.markClosed()
+        live = null
         super.onDestroy()
+    }
+
+    /** Synchronous in-process stop used by [requestStop]; no ActivityManager hop. */
+    private fun stopFromApp() {
+        Log.i(TAG, "stopFromApp: closing tun (fd=${vpnInterface?.fd})")
+        stopTunnelAndSelf()
     }
 
     private fun createInterface(ipv4Cidr: String, routes: Array<String>, dns: Boolean, mtu: Int): ParcelFileDescriptor {
@@ -101,9 +137,11 @@ class EasyTierVpnService : VpnService() {
     }
 
     private fun closeTunnel() {
+        val fd = vpnInterface?.fd
         vpnInterface?.close()
         vpnInterface = null
         stopForeground(STOP_FOREGROUND_REMOVE)
+        Log.i(TAG, "closeTunnel: closed fd=$fd")
     }
 
     private fun notification() = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -123,6 +161,7 @@ class EasyTierVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        live = WeakReference(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, getString(R.string.vpn_notification_channel), NotificationManager.IMPORTANCE_LOW))
@@ -137,6 +176,16 @@ class EasyTierVpnService : VpnService() {
 
     companion object {
         private const val TAG = "EasyTierVpnService"
+
+        /**
+         * Process-wide teardown handshake shared with [VpnTunTransport]. Lives in
+         * the companion because the app process hosts both sides.
+         */
+        val gate = VpnTeardownGate()
+
+        /** Explicit stop command for the service (used by [requestStop]). */
+        const val ACTION_STOP = "cc.ptoe.easytier.compose.action.STOP_VPN"
+
         const val EXTRA_INSTANCE_NAME = "cc.ptoe.easytier.compose.INSTANCE_NAME"
         const val EXTRA_IPV4_CIDR = "cc.ptoe.easytier.compose.IPV4_CIDR"
         const val EXTRA_ROUTES = "cc.ptoe.easytier.compose.ROUTES"
@@ -145,6 +194,32 @@ class EasyTierVpnService : VpnService() {
         private const val CHANNEL_ID = "easytier_vpn"
         private const val NOTIFICATION_ID = 1001
         private const val MAGIC_DNS = "100.100.100.101"
+
+        /** Live instance, so a stop requested from the app needs no AMS round-trip. */
+        @Volatile
+        private var live: WeakReference<EasyTierVpnService>? = null
+
+        /**
+         * Stops the service from inside the app process.
+         *
+         * Prefers the live instance: closing the TUN synchronously removes the
+         * race with a start intent that was already queued, which `stopService()`
+         * alone cannot win. Falls back to `stopService()` when the service is not
+         * alive (e.g. teardown after a process restart).
+         */
+        fun requestStop(context: Context) {
+            gate.requestStop()
+            val service = live?.get()
+            if (service != null) {
+                service.stopFromApp()
+            } else {
+                context.stopService(Intent(context, EasyTierVpnService::class.java))
+            }
+        }
+
+        /** Intent form of an explicit stop (kept for callers that cannot hold the instance). */
+        fun stopIntent(context: Context): Intent =
+            Intent(context, EasyTierVpnService::class.java).setAction(ACTION_STOP)
 
         fun intent(context: Context, instanceName: String, ipv4Cidr: String, routes: List<String>, dns: Boolean, mtu: Int) =
             Intent(context, EasyTierVpnService::class.java)
