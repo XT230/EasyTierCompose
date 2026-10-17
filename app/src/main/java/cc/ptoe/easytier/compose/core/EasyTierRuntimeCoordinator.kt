@@ -77,6 +77,12 @@ class EasyTierRuntimeCoordinator private constructor(
             }
             return EasyTierRuntimeCoordinator(context.applicationContext, permissionRequester).also { instance = it }
         }
+
+        /**
+         * The process-wide instance when one already exists; never creates one and
+         * never replaces the VPN permission requester adopted by MainActivity.
+         */
+        fun existingInstance(): EasyTierRuntimeCoordinator? = instance
     }
 
     suspend fun start(profile: EasyTierProfile, globalSettings: GlobalSettings = GlobalSettings()): RuntimeStatus = mutex.withLock {

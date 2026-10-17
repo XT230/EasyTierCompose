@@ -412,4 +412,12 @@
     <string name="vpn_notification_title">EasyTier VPN 已启用</string>
     <string name="vpn_notification_text">EasyTier 正通过 Android VPN 转发流量</string>
     <string name="vpn_notification_channel">EasyTier VPN</string>
+    <!-- LAN auto start/stop rule -->
+    <string name="settings_auto_switch">本地网段自动启停</string>
+    <string name="settings_auto_switch_cidrs">本地网段（CIDR）</string>
+    <string name="settings_auto_switch_hint">手机连在这些 Wi-Fi/以太网网段时自动断开，离开后自动连接。仅支持 IPv4。请在系统设置中允许本应用后台运行，否则规则可能被系统停掉。</string>
+    <string name="error_invalid_cidr">CIDR 格式不正确</string>
+    <string name="lan_rule_channel">网段规则</string>
+    <string name="lan_rule_notification_title">网段规则运行中</string>
+    <string name="lan_rule_notification_text">正在根据当前网络自动启停 EasyTier</string>
     </resources>

@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T = EasyTierViewModel(
+            activity.applicationContext,
             ProfileRepository(activity.applicationContext),
             // Process-wide singleton: if BootCompletedReceiver already created the
             // coordinator (auto-start), reuse it and swap in the activity-backed

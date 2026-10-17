@@ -262,6 +262,12 @@ data class EasyTierProfile(
     // never affect other devices in the network.
     val tunDeviceName: String = "easytier0",
     val startOnBoot: Boolean = false,
+    // LAN auto start/stop rule. Device-local and app-only: kept out of the TOML
+    // so the core never sees it. `autoSwitchCidrs` lists the IPv4 subnets that
+    // mean "I am home" — while the phone is on one of them the session is
+    // stopped, everywhere else it is started again (see rule/LanRuleEngine).
+    val autoSwitchEnabled: Boolean = false,
+    val autoSwitchCidrs: List<String> = emptyList(),
     val mtu: Int = 1380,
     val multiThread: Boolean = true,
     val multiThreadCount: Int = 2,

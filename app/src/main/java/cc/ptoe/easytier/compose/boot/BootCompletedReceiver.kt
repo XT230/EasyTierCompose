@@ -4,20 +4,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import cc.ptoe.easytier.compose.core.EasyTierRuntimeCoordinator
-import cc.ptoe.easytier.compose.data.GlobalSettingsRepository
-import cc.ptoe.easytier.compose.data.ProfileRepository
-import cc.ptoe.easytier.compose.data.mergeInto
-import cc.ptoe.easytier.compose.transport.vpn.VpnPermissionRequester
+import cc.ptoe.easytier.compose.core.SessionStarter
+import cc.ptoe.easytier.compose.rule.LanRuleService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Starts the EasyTier VPN / Root TUN service after system boot when the user
- * has enabled "Start on boot" in Settings.
+ * has enabled "Start on boot" in Settings, and keeps the LAN rule service alive
+ * across reboots.
  *
  * Does NOT launch MainActivity: the selected profile is loaded from DataStore
  * and the coordinator is started headless. This is BAL-compliant because no
@@ -46,28 +43,32 @@ class BootCompletedReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val appContext = context.applicationContext
-                val repo = ProfileRepository(appContext)
-                val profiles = repo.profiles.first()
-                if (profiles.isEmpty()) return@launch
-                val selectedId = repo.selectedProfileId.first()
-                val profile = profiles.firstOrNull { it.id == selectedId } ?: profiles.first()
 
+                // The LAN rule must survive a reboot: BOOT_COMPLETED is one of the
+                // documented exemptions that may start a foreground service.
+                runCatching { LanRuleService.sync(appContext) }
+                    .onFailure { Log.w(TAG, "lan rule sync failed: ${it.message}") }
+
+                // Booting while already on the home subnet: starting here would be
+                // undone by the rule a few seconds later, so skip the session and
+                // let the rule service keep it off.
+                if (LanRuleService.isSuppressed(appContext)) {
+                    Log.i(TAG, "on a rule subnet; skipping boot start")
+                    return@launch
+                }
+
+                val target = SessionStarter.loadTarget(appContext) ?: return@launch
                 // startOnBoot is a per-profile flag toggled from the main Settings
                 // page; the selected profile's value decides whether to start at boot.
-                val settings = GlobalSettingsRepository(appContext).settings.first()
-                if (!settings.mergeInto(profile).startOnBoot) return@launch
+                if (!target.profile.startOnBoot) return@launch
 
-                // Share the process-wide singleton coordinator with MainActivity: if the
-                // boot receiver created its own instance, a later disconnect() from the
-                // activity would not stop this one's poll loop / VPN service.
-                val coordinator = EasyTierRuntimeCoordinator.getInstance(appContext, NO_OP_REQUESTER)
                 // startDetached launches `start` in the coordinator's own SupervisorJob
                 // scope, so this withTimeoutOrNull only abandons *waiting* for the
                 // result — the start operation itself (bind + remote.start + daemon
                 // startup) keeps running. This is critical for ROOT_TUN where boot-time
                 // root process startup can exceed 8s; cancelling bind() mid-way would
                 // leave the daemon bound but never told which profile to run.
-                val startJob = coordinator.startDetached(profile, settings)
+                val startJob = SessionStarter.startDetached(appContext, target)
                 withTimeoutOrNull(8_000) { startJob.join() }
                     ?: Log.w(TAG, "coordinator.start did not settle within 8s; leaving it running")
             } catch (e: Throwable) {
@@ -80,12 +81,5 @@ class BootCompletedReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "BootCompletedReceiver"
-
-        // No-op requester: always denies. From a background context BAL blocks
-        // launching the system VPN consent Intent, so if `VpnService.prepare`
-        // returns non-null (not yet authorized) we cannot prompt the user and
-        // must surface ERROR. Once the user grants VPN permission in-app, prepare
-        // returns null on subsequent boots and this requester is never invoked.
-        private val NO_OP_REQUESTER = VpnPermissionRequester { false }
     }
 }

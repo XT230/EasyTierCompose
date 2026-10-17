@@ -37,9 +37,11 @@ import cc.ptoe.easytier.compose.BuildConfig
 import cc.ptoe.easytier.compose.R
 import cc.ptoe.easytier.compose.data.RuntimeState
 import cc.ptoe.easytier.compose.data.TunMode
+import cc.ptoe.easytier.compose.rule.Ipv4Cidr
 import cc.ptoe.easytier.compose.ui.EasyTierUiState
 import cc.ptoe.easytier.compose.ui.components.ChoiceOption
 import cc.ptoe.easytier.compose.ui.components.ChoiceRow
+import cc.ptoe.easytier.compose.ui.components.ListField
 import cc.ptoe.easytier.compose.ui.components.SettingsGroup
 import cc.ptoe.easytier.compose.ui.components.SettingsItem
 import cc.ptoe.easytier.compose.ui.components.SwitchRow
@@ -50,6 +52,8 @@ internal fun SettingsScreen(
     state: EasyTierUiState,
     onTunMode: (TunMode) -> Unit,
     onStartOnBoot: (Boolean) -> Unit,
+    onAutoSwitchEnabled: (Boolean) -> Unit,
+    onAutoSwitchCidrs: (List<String>) -> Unit,
     onOpenGlobalSettings: () -> Unit,
     reset: () -> Unit,
 ) {
@@ -68,6 +72,9 @@ internal fun SettingsScreen(
     val active = state.runtime.state in setOf(RuntimeState.STARTING, RuntimeState.RUNNING)
     val tunMode = profile?.tunMode ?: TunMode.VPN_SERVICE
     val canEdit = profile != null && !active
+    // Unparseable CIDRs are persisted (so the user can fix them in place) but
+    // never applied; surface them instead of silently dropping the entry.
+    val invalidCidr = profile?.autoSwitchCidrs?.any { Ipv4Cidr.parseOrNull(it) == null } == true
 
     var confirmReset by remember { mutableStateOf(false) }
 
@@ -90,6 +97,25 @@ internal fun SettingsScreen(
                         checked = profile?.startOnBoot ?: false,
                         enabled = canEdit,
                         onChange = onStartOnBoot,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SwitchRow(
+                        label = stringResource(R.string.settings_auto_switch),
+                        checked = profile?.autoSwitchEnabled ?: false,
+                        enabled = profile != null,
+                        onChange = onAutoSwitchEnabled,
+                    )
+                    ListField(
+                        label = stringResource(R.string.settings_auto_switch_cidrs),
+                        items = profile?.autoSwitchCidrs.orEmpty(),
+                        error = if (invalidCidr) stringResource(R.string.error_invalid_cidr) else null,
+                        enabled = profile?.autoSwitchEnabled == true,
+                        onChange = onAutoSwitchCidrs,
+                    )
+                    Text(
+                        text = stringResource(R.string.settings_auto_switch_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

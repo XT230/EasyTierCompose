@@ -1,5 +1,6 @@
 package cc.ptoe.easytier.compose.ui
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,6 +15,7 @@ import cc.ptoe.easytier.compose.data.ProfileRepository
 import cc.ptoe.easytier.compose.data.RuntimeState
 import cc.ptoe.easytier.compose.data.RuntimeStatus
 import cc.ptoe.easytier.compose.data.TunMode
+import cc.ptoe.easytier.compose.rule.LanRuleService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +34,7 @@ data class EasyTierUiState(
 )
 
 class EasyTierViewModel(
+    private val appContext: Context,
     private val repository: ProfileRepository,
     private val coordinator: EasyTierRuntimeCoordinator,
     private val globalSettingsRepository: GlobalSettingsRepository,
@@ -94,6 +97,10 @@ class EasyTierViewModel(
             val settings = globalSettingsRepository.settings.first()
             coordinator.attachRunningInstance(settings) { id -> profiles.firstOrNull { it.id == id } }
             coordinator.attachOrphanRoot { id -> profiles.firstOrNull { it.id == id } }
+            // Reconcile the LAN rule service with the persisted settings: the app
+            // may have been updated/force-stopped while the rule was enabled.
+            runCatching { LanRuleService.sync(appContext) }
+                .onFailure { Log.w(TAG, "lan rule sync failed: ${it.message}") }
         }
     }
 
@@ -136,6 +143,31 @@ class EasyTierViewModel(
         val updated = profile.copy(startOnBoot = enabled)
         repository.save(updated)
         draft.value = draft.value?.takeIf { it.id == updated.id }?.copy(startOnBoot = enabled)
+    }
+
+    fun updateAutoSwitchEnabled(enabled: Boolean) = viewModelScope.launch {
+        val profile = selectedProfile() ?: return@launch
+        val updated = profile.copy(autoSwitchEnabled = enabled)
+        repository.save(updated)
+        draft.value = draft.value?.takeIf { it.id == updated.id }?.copy(autoSwitchEnabled = enabled)
+        syncLanRule()
+    }
+
+    fun updateAutoSwitchCidrs(cidrs: List<String>) = viewModelScope.launch {
+        val profile = selectedProfile() ?: return@launch
+        // Persist what the user typed (unparseable entries are ignored by the
+        // engine and flagged by the UI) but drop blanks and duplicates.
+        val cleaned = cidrs.map(String::trim).filter(String::isNotEmpty).distinct()
+        val updated = profile.copy(autoSwitchCidrs = cleaned)
+        repository.save(updated)
+        draft.value = draft.value?.takeIf { it.id == updated.id }?.copy(autoSwitchCidrs = cleaned)
+        syncLanRule()
+    }
+
+    /** Starts or stops [LanRuleService] so it mirrors the persisted rule. */
+    private suspend fun syncLanRule() {
+        runCatching { LanRuleService.sync(appContext) }
+            .onFailure { Log.w(TAG, "lan rule sync failed: ${it.message}") }
     }
 
     fun updateGlobalSettings(settings: GlobalSettings) = viewModelScope.launch {

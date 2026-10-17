@@ -328,6 +328,8 @@ fun EasyTierApp(
                             state = state,
                             onTunMode = viewModel::updateTunMode,
                             onStartOnBoot = viewModel::updateStartOnBoot,
+                            onAutoSwitchEnabled = viewModel::updateAutoSwitchEnabled,
+                            onAutoSwitchCidrs = viewModel::updateAutoSwitchCidrs,
                             onOpenGlobalSettings = { destination = Destination.GlobalSettings },
                             reset = viewModel::resetProfiles,
                         )

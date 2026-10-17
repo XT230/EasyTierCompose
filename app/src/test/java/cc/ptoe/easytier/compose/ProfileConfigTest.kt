@@ -68,6 +68,22 @@ class ProfileConfigTest {
     }
 
     @Test
+    fun `lan auto switch settings never reach the core config`() {
+        // autoSwitch* is app-only state for the LAN rule; leaking it into the TOML
+        // would make the core reject the config.
+        val plain = TomlConfigBuilder.build(profile())
+        val withRule = TomlConfigBuilder.build(
+            profile().copy(
+                autoSwitchEnabled = true,
+                autoSwitchCidrs = listOf("192.168.1.0/24"),
+            ),
+        )
+        assertEquals(plain, withRule)
+        assertFalse(withRule.contains("auto_switch"))
+        assertFalse(withRule.contains("192.168.1.0/24"))
+    }
+
+    @Test
     fun `dhcp omits static ipv4`() {
         val toml = TomlConfigBuilder.build(profile(dhcp = true))
         assertTrue(toml.contains("dhcp = true"))

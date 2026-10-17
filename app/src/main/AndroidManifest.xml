@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- LAN auto start/stop rule: read the active network's link addresses.
+         No location/Wi-Fi permission is needed because the rule keys on subnets. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:allowBackup="true"
@@ -46,6 +49,14 @@
             android:name=".transport.root.EasyTierRootService"
             android:exported="false"
             tools:ignore="Instantiatable" />
+        <service
+            android:name=".rule.LanRuleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="@string/fgs_special_use_subtype" />
+        </service>
         <receiver
             android:name=".boot.BootCompletedReceiver"
             android:enabled="true"

@@ -436,4 +436,12 @@
     <string name="vpn_notification_channel">EasyTier VPN</string>
     <string name="fgs_special_use_subtype">EasyTier virtual network transport</string>
     <string name="error_vpn_establish_failed">Failed to establish EasyTier VPN</string>
+    <!-- LAN auto start/stop rule -->
+    <string name="settings_auto_switch">Auto start on local subnet</string>
+    <string name="settings_auto_switch_cidrs">Local subnet (CIDR)</string>
+    <string name="settings_auto_switch_hint">Stops EasyTier while the phone is on one of these Wi-Fi/Ethernet subnets and starts it again after leaving. IPv4 only. Allow background activity for this app, otherwise the system may stop the rule.</string>
+    <string name="error_invalid_cidr">Invalid CIDR</string>
+    <string name="lan_rule_channel">LAN rule</string>
+    <string name="lan_rule_notification_title">LAN rule active</string>
+    <string name="lan_rule_notification_text">Watching the current network to start or stop EasyTier</string>
 </resources>
